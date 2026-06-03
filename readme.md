@@ -1,4 +1,4 @@
-# Multi-Source IoT Telemetry & ERP Integration Platform
+# Multi-Source IoT Telemetry & ERP Integration Platform [WIP]
 
 Podniková integrační platforma (vzorová architektura) postavená na frameworku **FastAPI**, která řeší reálné business scénáře v oblasti IT/OT integrací. Systém slouží jako asynchronní datová pumpa pro sběr telemetrických dat z průmyslových IoT zařízení (vodoměrů) do relační databáze a zároveň jako orchestrátor pro import obchodních dat do **Odoo ERP** pomocí XML-RPC protokolu.
 
