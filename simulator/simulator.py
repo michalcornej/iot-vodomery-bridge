@@ -1,76 +1,103 @@
-import time
-import random
-import requests
-import logging
-from datetime import datetime, timezone
+"""Simulátor IoT vodoměrů – posílá telemetrii do bridge včetně občasných anomálií.
 
-# Nastavení čistého logování pro simulátor
+Konfigurace přes proměnné prostředí:
+  API_URL     adresa endpointu (výchozí http://127.0.0.1:8000/api/v1/telemetry)
+  API_KEY     API klíč bridge (povinné)
+  METER_IDS   ID vodoměrů oddělená čárkou (výchozí vodomer111)
+  INTERVAL    interval odesílání v sekundách (výchozí 5)
+"""
+
+import logging
+import os
+import random
+import sys
+import time
+from datetime import UTC, datetime
+
+import requests
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] IoT-Sim: %(message)s",
-    datefmt="%H:%M:%S"
+    datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("simulator")
 
-# URL adresa naší nové FastAPI platformy
-API_URL = "http://127.0.0.1:8000/api/v1/telemetry"
-METER_ID = "vodomer111" 
-INIT_CONSUMPTION = 0.000 
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000/api/v1/telemetry")
+API_KEY = os.getenv("API_KEY", "")
+METER_IDS = [m.strip() for m in os.getenv("METER_IDS", "vodomer111").split(",") if m.strip()]
+INTERVAL = float(os.getenv("INTERVAL", "5"))
 
-def run_simulator():
-    logger.info(f"🚀 Spouštím IoT simulátor pro zařízení: {METER_ID}")
-    logger.info(f"📡 Cílové API: {API_URL}")
-    
-    current_consumption = INIT_CONSUMPTION
-    battery = 100
+SPIKE_CHANCE = 0.05  # nereálný skok hodnoty
+NULL_CHANCE = 0.05  # výpadek hodnoty
 
+
+class Meter:
+    def __init__(self, meter_id: str):
+        self.meter_id = meter_id
+        self.consumption = 0.0
+        self.battery = 100
+
+    def next_payload(self) -> dict:
+        # Průtok 0–3,6 m³/h nezávisle na intervalu odesílání
+        self.consumption += random.uniform(0.0, 0.001) * INTERVAL
+        # Pomalé vybíjení baterie
+        self.battery = max(90, self.battery - random.choice([0, 0, 0, 0, 1]))
+
+        value = round(self.consumption, 4)
+        roll = random.random()
+        if roll < SPIKE_CHANCE:
+            value = 999.999
+            logger.warning("[%s] SIMULACE ANOMÁLIE: skok měření na 999.999 m³", self.meter_id)
+        elif roll < SPIKE_CHANCE + NULL_CHANCE:
+            value = None
+            logger.warning("[%s] SIMULACE ANOMÁLIE: výpadek hodnoty (null)", self.meter_id)
+
+        return {
+            "meter_id": self.meter_id,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "cumulative_consumption": value,
+            "battery_level": self.battery,
+            "signal_strength": random.randint(-85, -75),
+        }
+
+
+def send(session: requests.Session, payload: dict) -> None:
+    try:
+        response = session.post(API_URL, json=payload, timeout=5)
+    except requests.RequestException as e:
+        logger.critical("Chyba spojení s bridge (%s): %s", API_URL, e)
+        return
+    if response.status_code == 201:
+        anomaly = response.json().get("anomaly")
+        logger.info(
+            "[%s] Odesláno %s m³ -> 201%s",
+            payload["meter_id"],
+            payload["cumulative_consumption"],
+            f" (bridge hlásí anomálii: {anomaly})" if anomaly else "",
+        )
+    else:
+        logger.error("[%s] Chyba API (%s): %s", payload["meter_id"], response.status_code, response.text)
+
+
+def run_simulator() -> None:
+    if not API_KEY:
+        sys.exit("Nastavte proměnnou prostředí API_KEY (stejná hodnota jako v .env bridge).")
+
+    meters = [Meter(meter_id) for meter_id in METER_IDS]
+    logger.info("Spouštím IoT simulátor pro zařízení: %s", ", ".join(METER_IDS))
+    logger.info("Cílové API: %s", API_URL)
+
+    session = requests.Session()
+    session.headers["X-API-Key"] = API_KEY
     try:
         while True:
-            # 1. Standardní simulace spotřeby vody
-            water_flow = random.uniform(0.000, 0.005)
-            current_consumption += water_flow
-            
-            # Simulace pomalého vybíjení baterie
-            battery = max(90, battery - random.choice([0, 0, 0, 0, 1]))
-            signal = random.randint(-85, -75)
-            now = datetime.now(timezone.utc)
-
-            # --- LOGIKA ANOMÁLIÍ (Testování robustnosti bridge) ---
-            error_chance = random.randint(0, 100)
-            display_consumption = round(current_consumption, 4)
-
-            if error_chance < 5:  # 5% šance na totální ústřel (neplatná data)
-                display_consumption = 999.999
-                logger.warning("🚨 [SIMULACE ANOMÁLIE] Generuji kritický ústřel měření (999.999 m³)...")
-                
-            elif error_chance < 10:  # Dalších 5% šance na výpadek signálu/dat
-                display_consumption = None
-                logger.warning("🚨 [SIMULACE ANOMÁLIE] Generuji výpadek hodnoty (NULL)...")
-
-            # --- SESTAVENÍ PAYLOADU ---
-            payload = {
-                "meter_id": METER_ID,
-                "timestamp": now.isoformat(),
-                "cumulative_consumption": display_consumption,
-                "battery_level": battery,
-                "signal_strength": signal
-            }
-
-            # --- ODESLÁNÍ DO BRIDGE ---
-            try:
-                response = requests.post(API_URL, json=payload, timeout=5)
-                if response.status_code == 201:
-                    logger.info(f"Odesláno -> {current_consumption:.4f} m³ | Odpověď API: 201 Saved")
-                else:
-                    logger.error(f"Chyba API ({response.status_code}): {response.text}")
-            except requests.exceptions.ConnectionError:
-                logger.critical("❌ Chyba spojení: Integrační Bridge na portu 8000 neběží!")
-            
-            # Interval odesílání telemetrie
-            time.sleep(5)
-
+            for meter in meters:
+                send(session, meter.next_payload())
+            time.sleep(INTERVAL)
     except KeyboardInterrupt:
-        logger.info("\n🛑 Jednotka simulátoru byla ručně vypnuta.")
+        logger.info("Simulátor byl ručně vypnut.")
+
 
 if __name__ == "__main__":
     run_simulator()
