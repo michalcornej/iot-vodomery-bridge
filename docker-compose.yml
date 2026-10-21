@@ -1,0 +1,80 @@
+# Spuštění: cp .env.example .env  (a vyplnit hodnoty), pak docker compose up -d --build
+# Simulátor:  docker compose --profile sim up -d
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: ${DB_NAME:?nastavte DB_NAME v .env}
+      POSTGRES_USER: ${DB_USER:?nastavte DB_USER v .env}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?nastavte DB_PASSWORD v .env}
+    volumes:
+      - telemetry-data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  odoo-db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: ${ODOO_DB_PASSWORD:?nastavte ODOO_DB_PASSWORD v .env}
+    volumes:
+      - odoo-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  odoo:
+    image: odoo:17
+    restart: unless-stopped
+    environment:
+      HOST: odoo-db
+      USER: odoo
+      PASSWORD: ${ODOO_DB_PASSWORD:?nastavte ODOO_DB_PASSWORD v .env}
+    depends_on:
+      odoo-db:
+        condition: service_healthy
+    volumes:
+      - odoo-web-data:/var/lib/odoo
+    ports:
+      - "127.0.0.1:8069:8069"
+
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      ODOO_URL: http://odoo:8069
+    depends_on:
+      db:
+        condition: service_healthy
+      odoo:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  simulator:
+    build: ./simulator
+    profiles: ["sim"]
+    environment:
+      API_URL: http://api:8000/api/v1/telemetry
+      API_KEY: ${API_KEY}
+      METER_IDS: vodomer111,vodomer112,vodomer113
+    depends_on:
+      - api
+
+volumes:
+  telemetry-data:
+  odoo-db-data:
+  odoo-web-data:

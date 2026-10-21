@@ -1,7 +1,6 @@
-fastapi>=0.100.0
-uvicorn>=0.22.0
-pydantic>=2.0
-pydantic-settings>=2.0
-psycopg2-binary>=2.9.6
-requests>=2.31.0
-python-dotenv>=1.0.0
+fastapi==0.156.7
+uvicorn==0.54.0
+pydantic==2.14.1
+pydantic-settings==2.16.1
+psycopg2-binary==2.9.13
+python-multipart==0.0.32
